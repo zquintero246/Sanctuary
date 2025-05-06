@@ -1,0 +1,60 @@
+# Ignorar archivos pesados y temporales dentro de tus carpetas, pero no las carpetas en sí
+
+# Audio/video generados
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.webm
+*.mp4
+*.m4a
+
+# Modelos descargados
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.npz
+
+# Archivos de cache
+__pycache__/
+*.log
+*.tmp
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Archivos de configuración de IDE
+.idea/
+.vscode/
+
+# Whisper y TTS (si descargan en carpetas ocultas)
+TTS/.models/
+**/.local/share/tts/
+**/.models/
+
+# Ollama local files
+.ollama/
+ollama.db
+
+# Ignorar outputs generados pero mantener las carpetas
+!Services/sanctuary_stt/
+!Services/sanctuary_core/
+!Services/sanctuary_tts/
+!sanctuary-ui/
+!test_audios/
+!outputs/
+!cloning_audio/
+
+# Pero sí ignorar el contenido pesado dentro de esas carpetas
+sanctuary_stt/**/*.wav
+sanctuary_stt/**/*.mp4
+sanctuary_core/**/*.wav
+sanctuary_tts/**/*.wav
+test_audios/*
+outputs/*
+cloning_audio/*
