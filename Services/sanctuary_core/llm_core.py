@@ -47,9 +47,3 @@ def answer_generation(user_message):
 
 
     return response.message.content
-
-
-
-
-
-

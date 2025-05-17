@@ -12,7 +12,7 @@ def cuda_works():
 
 def generate_text(audio_path):
 
-    #Se llama al modelo y el audio a transcribir
+    # Se llama al modelo y el audio a transcribir
     model = whisper.load_model("base")
     result = model.transcribe(audio = audio_path)
 

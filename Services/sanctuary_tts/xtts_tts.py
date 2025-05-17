@@ -25,6 +25,3 @@ def voice_gen(text_tts):
     print("Reproduciendo voz de Sanctuary...")
     sd.play(np.array(wav), samplerate=tts.synthesizer.output_sample_rate)
     sd.wait()
-
-
-
