@@ -5,7 +5,7 @@ import time
 import torch
 
 
-# Se genera una respuesta a traves del audio procesador y convertido a texto del usuario
+# Se genera una respuesta a traves del audio procesado y convertido a texto del usuario
 def answer_generation(user_message):
 
     initial_prompt = {
