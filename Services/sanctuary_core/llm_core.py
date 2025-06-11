@@ -34,7 +34,7 @@ def answer_generation(user_message):
         }
     )
 
-    response: ChatResponse = chat(model='stablelm2:1.6b', messages=messages)
+    response: ChatResponse = chat(model='hf.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF:Q4_K_M', messages=messages)
 
     messages.append(
         {
