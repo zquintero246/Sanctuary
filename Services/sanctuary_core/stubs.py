@@ -68,7 +68,6 @@ class ScriptedVAD(VADInterface):
         self._script = deque(script)
         self._endpoint_after = endpoint_after
         self._chunks_seen = 0
-        self._endpoint_flag = False
 
     def is_voice(self, pcm_bytes: bytes) -> bool:
         self._chunks_seen += 1
@@ -77,16 +76,4 @@ class ScriptedVAD(VADInterface):
         return False
 
     def endpointed(self) -> bool:
-        if not self._endpoint_after:
-            return False
-        if self._endpoint_flag:
-            self._endpoint_flag = False
-            return True
-        if self._chunks_seen >= self._endpoint_after:
-            self._endpoint_flag = True
-            return True
-        return False
-
-    def reset(self) -> None:
-        self._chunks_seen = 0
-        self._endpoint_flag = False
+        return self._chunks_seen >= self._endpoint_after if self._endpoint_after else False

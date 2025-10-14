@@ -2,18 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections import deque
 from enum import Enum
 from typing import AsyncIterator, Awaitable, Callable, Deque, Optional
 
-from .interfaces import (
-    LLMInterface,
-    STTInterface,
-    STTPartial,
-    TTSInterface,
-    VADInterface,
-)
+from .interfaces import LLMInterface, STTInterface, STTPartial, TTSInterface, VADInterface
 from .tracer import Tracer
 
 
@@ -23,6 +16,10 @@ class SessionState(str, Enum):
     THINKING = "THINKING"
     SPEAKING = "SPEAKING"
     INTERRUPTED = "INTERRUPTED"
+
+
+StopSignal = object()
+
 
 class Orchestrator:
     """Coordinates the realtime full-duplex voice pipeline."""
@@ -113,7 +110,6 @@ class Orchestrator:
                         False,
                     )
                     await self._maybe_start_llm(final.get("text", ""), ws_send, tracer)
-                    self.vad.reset()
         finally:
             # If listening loop exits ensure any ongoing LLM task completes or is cancelled.
             if self._llm_task and not self._llm_task.done():
@@ -202,14 +198,17 @@ class Orchestrator:
     async def _interrupt_speaking(self) -> None:
         if not self._stop_speaking.is_set():
             self._stop_speaking.set()
-        await self.tts.stop()
+            await self.tts.stop()
+            self._clear_speak_queue()
+
+    def _clear_speak_queue(self) -> None:
         while True:
             try:
-                item = self._speak_q.get_nowait()
+                self._speak_q.get_nowait()
             except asyncio.QueueEmpty:
-                break
+                return
             else:
-                if item is not None:
-                    # Pending text entries are discarded to avoid stale playback.
-                    pass
                 self._speak_q.task_done()
+
+
+import contextlib  # noqa: E402  (imported late to avoid circular issues)

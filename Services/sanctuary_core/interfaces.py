@@ -59,6 +59,3 @@ class VADInterface:
 
     def endpointed(self) -> bool:
         """Return ``True`` once a segment endpoint has been detected."""
-
-    def reset(self) -> None:
-        """Reset any internal endpointing state so a new turn can start."""
