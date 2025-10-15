@@ -12,10 +12,13 @@ from Services.sanctuary_core.stubs import ScriptedLLM, ScriptedSTT, ScriptedTTS,
 
 
 async def run_orchestrator(orchestrator, audio_chunks, ws_events):
-    async def ws_send(payload, binary=False):
-        ws_events.append(("binary" if binary else "text", payload))
+    async def ws_send_text(payload):
+        ws_events.append(("text", payload))
 
-    await orchestrator.handle_session(audio_chunks, ws_send)
+    async def ws_send_audio(payload):
+        ws_events.append(("binary", payload))
+
+    await orchestrator.handle_session(audio_chunks, ws_send_text, ws_send_audio)
 
 
 async def audio_iter(chunks):
@@ -174,10 +177,15 @@ def test_barge_in_triggers_stop():
 
         events = []
 
-        async def ws_send(payload, binary=False):
-            events.append(("binary" if binary else "text", payload))
+        async def ws_send_text(payload):
+            events.append(("text", payload))
 
-        task = asyncio.create_task(orchestrator.handle_session(queue_iter(), ws_send))
+        async def ws_send_audio(payload):
+            events.append(("binary", payload))
+
+        task = asyncio.create_task(
+            orchestrator.handle_session(queue_iter(), ws_send_text, ws_send_audio)
+        )
         await audio_queue.put(b"chunk1")  # initial speech
         await asyncio.sleep(0.01)
         await audio_queue.put(b"chunk2")  # silencio

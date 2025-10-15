@@ -82,6 +82,10 @@ class TransformersStreamingLLM(LLMInterface):
             thread.join(timeout=0.1)
 
 
+class StreamingLLM(TransformersStreamingLLM):
+    """Alias kept for compatibility with the public API."""
+
+
 class _StopSequencesCriteria(StoppingCriteria):
     """Simple stopping criteria matching token sequences."""
 

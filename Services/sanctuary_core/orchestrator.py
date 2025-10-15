@@ -53,15 +53,25 @@ class Orchestrator:
     async def handle_session(
         self,
         audio_chunks: AsyncIterator[bytes],
-        ws_send: Callable[[object, bool], Awaitable[None]],
+        send_json: Callable[[object], Awaitable[None]],
+        send_audio: Callable[[bytes], Awaitable[None]],
     ) -> None:
         """Drive a full conversational turn until the audio source completes."""
 
         tracer = Tracer()
         tracer.mark("turn_start")
+        self.state = SessionState.LISTENING
+        self._stt_first_partial_emitted = False
+        self._awaiting_new_turn = True
+        self._pending_prompts.clear()
+        self._active_prompt = None
+        self._last_prompt_text = None
+        self._stop_speaking.clear()
 
-        listen_task = asyncio.create_task(self._listen_loop(audio_chunks, ws_send, tracer))
-        speak_task = asyncio.create_task(self._speak_loop(ws_send, tracer))
+        listen_task = asyncio.create_task(
+            self._listen_loop(audio_chunks, send_json, send_audio, tracer)
+        )
+        speak_task = asyncio.create_task(self._speak_loop(send_audio, tracer))
 
         await listen_task
         # Ensure all pending speech has been processed before stopping the speaker loop.
@@ -72,14 +82,15 @@ class Orchestrator:
         tracer.mark("turn_end")
         metrics = tracer.metrics()
         if metrics:
-            await ws_send({"type": "metrics", **metrics}, False)
+            await send_json({"type": "metrics", **metrics})
         tracer.dump()
 
     # ------------------------------------------------------------------
     async def _listen_loop(
         self,
         audio_chunks: AsyncIterator[bytes],
-        ws_send: Callable[[object, bool], Awaitable[None]],
+        send_json: Callable[[object], Awaitable[None]],
+        send_audio: Callable[[bytes], Awaitable[None]],
         tracer: Tracer,
     ) -> None:
         try:
@@ -97,9 +108,9 @@ class Orchestrator:
                     self.state = SessionState.LISTENING
                     await self.stt.feed(pcm, self.sample_rate)
                     async for partial in self.stt.stream_partials():
-                        await self._emit_partial(partial, ws_send, tracer)
+                        await self._emit_partial(partial, send_json, tracer)
                         if partial.get("maybe_sentence_boundary"):
-                            await self._maybe_start_llm(partial["text"], ws_send, tracer)
+                            await self._maybe_start_llm(partial["text"], send_json, send_audio, tracer)
                 else:
                     # still feed STT to keep buffers aligned
                     await self.stt.feed(pcm, self.sample_rate)
@@ -108,15 +119,16 @@ class Orchestrator:
                     final = await self.stt.get_final()
                     if not tracer._mark_time("stt_final"):
                         tracer.mark("stt_final")
-                    await ws_send(
+                    await send_json(
                         {
                             "type": "stt_final",
                             "text": final.get("text", ""),
                             "is_final": True,
-                        },
-                        False,
+                        }
                     )
-                    await self._maybe_start_llm(final.get("text", ""), ws_send, tracer)
+                    await self._maybe_start_llm(
+                        final.get("text", ""), send_json, send_audio, tracer
+                    )
                     self.vad.reset()
                     self._awaiting_new_turn = True
         finally:
@@ -129,25 +141,25 @@ class Orchestrator:
     async def _emit_partial(
         self,
         partial: STTPartial,
-        ws_send: Callable[[object, bool], Awaitable[None]],
+        send_json: Callable[[object], Awaitable[None]],
         tracer: Tracer,
     ) -> None:
         if not self._stt_first_partial_emitted:
             tracer.mark("stt_first_partial")
             self._stt_first_partial_emitted = True
-        await ws_send(
+        await send_json(
             {
                 "type": "stt_partial",
                 "text": partial.get("text", ""),
                 "is_final": bool(partial.get("is_final", False)),
-            },
-            False,
+            }
         )
 
     async def _maybe_start_llm(
         self,
         text: str,
-        ws_send: Callable[[object, bool], Awaitable[None]],
+        send_json: Callable[[object], Awaitable[None]],
+        send_audio: Callable[[bytes], Awaitable[None]],
         tracer: Tracer,
     ) -> None:
         prompt = text.strip()
@@ -178,7 +190,7 @@ class Orchestrator:
                         tracer.mark("llm_first_token")
                         self.state = SessionState.SPEAKING
                         first_chunk = False
-                    await ws_send({"type": "assistant_text", "text": chunk}, False)
+                    await send_json({"type": "assistant_text", "text": chunk})
                     await self._speak_q.put(chunk)
             finally:
                 self._active_prompt = None
@@ -186,7 +198,7 @@ class Orchestrator:
                     self._stop_speaking.clear()
                 if self._pending_prompts:
                     next_prompt = self._pending_prompts.popleft()
-                    await self._maybe_start_llm(next_prompt, ws_send, tracer)
+                    await self._maybe_start_llm(next_prompt, send_json, send_audio, tracer)
                 else:
                     # Completed speaking, go back to listening.
                     self.state = SessionState.LISTENING
@@ -196,7 +208,7 @@ class Orchestrator:
 
     async def _speak_loop(
         self,
-        ws_send: Callable[[object, bool], Awaitable[None]],
+        send_audio: Callable[[bytes], Awaitable[None]],
         tracer: Tracer,
     ) -> None:
         first_audio_emitted = False
@@ -212,7 +224,7 @@ class Orchestrator:
                     if not first_audio_emitted:
                         tracer.mark("tts_first_audio")
                         first_audio_emitted = True
-                    await ws_send(audio_chunk, True)
+                    await send_audio(audio_chunk)
             finally:
                 self._speak_q.task_done()
 

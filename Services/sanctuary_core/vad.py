@@ -16,11 +16,13 @@ class EnergyVAD(VADInterface):
         sample_rate: int = 16000,
         frame_ms: int = 20,
         silence_ms: int = 300,
+        end_silence_ms: int | None = None,
         voice_threshold: float = 40.0,
     ) -> None:
         self.sample_rate = sample_rate
         self.frame_ms = frame_ms
-        self.silence_frames = max(1, int(silence_ms / frame_ms))
+        effective_silence_ms = end_silence_ms if end_silence_ms is not None else silence_ms
+        self.silence_frames = max(1, int(effective_silence_ms / frame_ms))
         self.voice_threshold = voice_threshold
         self._recent_energy: Deque[float] = collections.deque(maxlen=self.silence_frames)
         self._silence_run = 0

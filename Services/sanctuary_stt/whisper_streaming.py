@@ -35,11 +35,13 @@ class WhisperStreamingSTT(STTInterface):
         model_size: str = "small",
         *,
         language: Optional[str] = "es",
+        sample_rate: int = 16000,
         partial_interval_ms: int = 150,
         endpoint_grace_ms: int = 350,
     ) -> None:
         self._model = whisper.load_model(model_size)
         self._language = language
+        self.sample_rate = sample_rate
         self._buffer = bytearray()
         self._partials: "asyncio.Queue[STTPartial]" = asyncio.Queue()
         self._final: Optional[STTPartial] = None
@@ -126,7 +128,7 @@ class WhisperStreamingSTT(STTInterface):
             }
             for segment in result.get("segments", [])
         ]
-        maybe_boundary = bool(text) and text[-1] in {".", "?", "!", "¡", "¿", "…"}
+        maybe_boundary = bool(text) and text[-1] in {".", "?", "!", "¡", "¿", "…", ",", ";", ":"}
         return {
             "text": text,
             "tokens": tokens,
