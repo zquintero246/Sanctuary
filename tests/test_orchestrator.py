@@ -38,8 +38,16 @@ def test_stt_partials_before_final():
         events = []
         await run_orchestrator(orchestrator, audio_iter([b"chunk1", b"chunk2"]), events)
 
-        partial_index = next(i for i, e in enumerate(events) if e[1].get("type") == "stt_partial")
-        final_index = next(i for i, e in enumerate(events) if e[1].get("type") == "stt_final")
+        partial_index = next(
+            i
+            for i, (kind, payload) in enumerate(events)
+            if kind == "text" and payload.get("type") == "stt_partial"
+        )
+        final_index = next(
+            i
+            for i, (kind, payload) in enumerate(events)
+            if kind == "text" and payload.get("type") == "stt_final"
+        )
         assert partial_index < final_index
 
     asyncio.run(runner())

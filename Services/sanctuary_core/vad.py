@@ -41,7 +41,15 @@ class EnergyVAD(VADInterface):
         return False
 
     def endpointed(self) -> bool:
-        return self._endpoint
+        if self._endpoint:
+            self._endpoint = False
+            return True
+        return False
+
+    def reset(self) -> None:
+        self._recent_energy.clear()
+        self._silence_run = 0
+        self._endpoint = False
 
     @staticmethod
     def _rms(pcm_bytes: bytes) -> float:

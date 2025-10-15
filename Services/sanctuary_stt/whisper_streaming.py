@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from asyncio import QueueEmpty
 from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncIterator, Optional
 
@@ -70,13 +71,14 @@ class WhisperStreamingSTT(STTInterface):
         # caller immediately calls ``get_final`` after the last audio frame.
         await asyncio.sleep(self._endpoint_grace)
         async with self._lock:
-            if self._final is not None:
-                return self._final
-            await self._schedule_partial(True)
-        # ``_schedule_partial`` populates ``self._final`` for final calls.
-        while self._final is None:
-            await asyncio.sleep(0)
-        return self._final
+            if self._final is None:
+                await self._schedule_partial(True)
+            # ``_schedule_partial`` populates ``self._final`` for final calls.
+            while self._final is None:
+                await asyncio.sleep(0)
+            result = self._final
+            self._reset_state()
+            return result
 
     async def _schedule_partial(self, is_final: bool) -> None:
         if self._pending_partial_task and not self._pending_partial_task.done():
@@ -131,4 +133,17 @@ class WhisperStreamingSTT(STTInterface):
             "is_final": is_final,
             "maybe_sentence_boundary": maybe_boundary,
         }
+
+    def _reset_state(self) -> None:
+        self._buffer.clear()
+        self._final = None
+        self._last_partial_ts = 0.0
+        while True:
+            try:
+                self._partials.get_nowait()
+            except QueueEmpty:
+                break
+            else:
+                self._partials.task_done()
+        self._pending_partial_task = None
 

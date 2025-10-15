@@ -1,6 +1,12 @@
-# 🧠 Sanctuary – Voice Streaming Pipeline
+# 🧠 Sanctuary – Pipeline de Voz Full Duplex
 
-Sanctuary ahora expone una **pipeline de voz casi en tiempo real** con escucha, razonamiento y respuesta en modo *full duplex controlado*. El sistema recibe audio continuo, publica parciales de STT, genera tokens de LLM en streaming y sintetiza voz con soporte de *barge-in* y telemetría de latencias.
+Sanctuary ahora incluye una orquestación **E2E en streaming** que escucha, razona y responde sobre la marcha. El ciclo completo admite:
+
+- **STT** con parciales cada ~150 ms, final con heurística de endpointing y *token timings* cuando el backend los soporta.
+- **LLM** con `generate_stream()` token a token.
+- **TTS** que reproduce audio en chunks (100–200 ms) con `stop()` inmediato para *barge-in*.
+- **Tracer** que expone latencias (`stt_first_partial_ms`, `llm_first_token_ms`, …) en formato JSON.
+- **Cliente de micrófono** que envía audio 16 kHz en vivo y reproduce la respuesta del asistente.
 
 ---
 
@@ -8,103 +14,118 @@ Sanctuary ahora expone una **pipeline de voz casi en tiempo real** con escucha, 
 
 ```mermaid
 graph LR
-    A[Audio del usuario] -->|20-40ms| B[STT streaming]
-    B -->|parciales 100-200ms| C[Orchestrator]
-    C --> D[LLM streaming]
+    A[Micrófono] -->|20-40 ms PCM| B[WhisperStreamingSTT]
+    B -->|stt_partial| C[Orchestrator]
+    C -->|prompt| D[TransformersStreamingLLM]
     D -->|tokens| C
-    C --> E[TTS streaming]
-    E -->|chunks 100-200ms| F[Reproducción]
+    C -->|texto| E[CoquiStreamingTTS]
+    E -->|audio chunks| F[Cliente voz]
     C --> G[Tracer]
-    G --> H[Metrics JSON]
-    C -->|Barge-in| E
+    G -->|metrics| F
+    F -->|voz usuario durante SPEAKING| C
 ```
 
-1. **LISTENING** – El usuario envía audio PCM por WebSocket `/voice`.
-2. **THINKING** – Cuando el VAD detecta silencio o un posible final de frase, el orquestador construye el prompt y activa `LLM.generate_stream()`.
-3. **SPEAKING** – El primer token activa TTS inmediatamente; los chunks de audio se envían al cliente con un *jitter buffer* de ~150 ms.
-4. **Barge-in** – Si el usuario vuelve a hablar, el orquestador detiene TTS (`stop()` + *fade*) y retoma la escucha.
-5. **Tracing** – Cada turno registra `stt_first_partial_ms`, `stt_final_ms`, `llm_first_token_ms`, `tts_first_audio_ms` y `turn_total_ms`.
-
-Objetivo de latencias: primeras palabras del asistente en < 800 ms, turno completo < 1.2 s.
+El objetivo es entregar las primeras palabras del asistente en **< 800 ms** y turnos completos < 1.2 s.
 
 ---
 
-## 🚀 Cómo ejecutar el servidor `/voice`
+## 🚀 Puesta en marcha
 
-1. **Instala dependencias** (recomendado usar entorno virtual):
+1. **Preparar entorno**
 
    ```bash
    python -m venv .venv
    source .venv/bin/activate
    pip install -r requirements.txt
-   pip install fastapi uvicorn pytest  # utilidades del servidor y pruebas
    ```
 
-2. **Inicia el servidor WebSocket**:
+   > Requisitos adicionales: `ffmpeg` para Whisper y dependencias del modelo Coqui XTTS (la primera ejecución descargará los pesos).
+
+2. **Configurar modelos (opcional)**
+
+   Variables de entorno disponibles:
+
+   | Variable | Descripción | Default |
+   | --- | --- | --- |
+   | `SANCTUARY_STT_MODEL` | Tamaño del modelo Whisper (`tiny`, `base`, `small`, …) | `small` |
+   | `SANCTUARY_STT_LANGUAGE` | ISO 639-1 para forzar idioma | `es` |
+   | `SANCTUARY_LLM_MODEL` | HuggingFace model id (causal LM) | `distilgpt2` |
+   | `SANCTUARY_LLM_SYSTEM_PREFIX` | Prefijo de estilo para el prompt | `""` |
+   | `SANCTUARY_TTS_MODEL` | Modelo Coqui TTS | `tts_models/multilingual/multi-dataset/xtts_v2` |
+   | `SANCTUARY_TTS_LANGUAGE` | Idioma de síntesis | `es` |
+   | `SANCTUARY_TTS_SPEAKER_WAV` | Ruta a audio para *voice cloning* | `None` |
+
+3. **Levantar el servidor WebSocket**
 
    ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
-3. **Conéctate al endpoint** `ws://localhost:8000/voice` enviando audio PCM mono 16 kHz (20–40 ms por chunk). El servidor responde con:
+4. **Conectar el cliente de micrófono**
 
-   ```json
-   {"type": "stt_partial", "text": "hola es", "is_final": false}
-   {"type": "stt_final", "text": "hola, ¿estás ahí?", "is_final": true}
-   {"type": "assistant_text", "text": "¡Hola! Sí, te escucho."}
-   {"type": "metrics", "stt_first_partial_ms": 180, "llm_first_token_ms": 220, "tts_first_audio_ms": 140, "turn_total_ms": 980}
+   ```bash
+   python voice_client.py --print-events
    ```
 
-   El audio de salida se envía como frames binarios PCM listos para reproducción.
-
-> **Nota:** `main.py` usa implementaciones *scripted* para propósitos de demostración. Sustituye `ScriptedSTT/LLM/TTS` por tus adaptadores reales.
+   El cliente captura audio mono 16 kHz en bloques de 20 ms, imprime parciales STT / métricas y reproduce los chunks de TTS que envía el servidor.
 
 ---
 
-## 🧱 Componentes clave
+## 🌐 Protocolo `/voice`
 
-- `Services/sanctuary_core/interfaces.py` – contratos para STT/LLM/TTS/VAD.
-- `Services/sanctuary_core/orchestrator.py` – coordina estados `IDLE`, `LISTENING`, `THINKING`, `SPEAKING`, `INTERRUPTED`.
-- `Services/sanctuary_core/tracer.py` – utilidades `mark()` y `span()` para métricas.
-- `Services/whisper_stt/streaming.py` – envoltorio genérico de STT con parciales y endpointing.
-- `Services/sanctuary_core/llm.py` – adaptador de LLM con `generate_stream()` token a token.
-- `Services/xtts_tts/streaming.py` – TTS con jitter buffer y `stop()` para *barge-in*.
-- `Services/sanctuary_core/stubs.py` – implementaciones scriptadas usadas en pruebas y demo.
+- **Cliente → Servidor (binario):** PCM `int16` mono 16 kHz, bloques de 20–40 ms.
+- **Servidor → Cliente:**
+
+  ```json
+  {"type": "tts_metadata", "sample_rate": 24000}
+  {"type": "stt_partial", "text": "hola es", "is_final": false}
+  {"type": "stt_final", "text": "hola, ¿estás ahí?", "is_final": true}
+  {"type": "assistant_text", "text": "¡Hola! Sí, te escucho."}
+  {"type": "metrics", "stt_first_partial_ms": 180, "llm_first_token_ms": 220, "tts_first_audio_ms": 140, "turn_total_ms": 980}
+  ```
+
+- **Audio TTS:** frames binarios PCM (`int16`) enviados como mensajes WS binarios. El cliente reajusta automáticamente la frecuencia usando `tts_metadata`.
+- **Fin de turno opcional:** `{"type": "end_user_turn"}`.
+
+---
+
+## 🧩 Componentes relevantes
+
+- `Services/sanctuary_core/interfaces.py` – contratos de STT/LLM/TTS/VAD.
+- `Services/sanctuary_core/orchestrator.py` – estados `LISTENING → THINKING → SPEAKING`, barge-in y colas de audio.
+- `Services/sanctuary_core/tracer.py` – utilidades `mark()` y `span()` + cálculo de métricas.
+- `Services/sanctuary_core/llm_transformers.py` – adaptador HuggingFace con `TextIteratorStreamer`.
+- `Services/sanctuary_stt/whisper_streaming.py` – Whisper en streaming con parciales y finales.
+- `Services/sanctuary_tts/coqui_streaming.py` – síntesis XTTS v2 troceada para streaming.
+- `voice_client.py` – CLI que envía audio del micrófono y reproduce la respuesta.
+
+---
+
+## 📊 Telemetría
+
+El orquestador utiliza `Tracer` para registrar eventos con `time.perf_counter()` y, al cerrar el turno, envía `{"type": "metrics", …}` al cliente. También imprime en stdout un arreglo JSON con el timeline completo, útil para dashboards o exportar a observabilidad.
 
 ---
 
 ## 🧪 Pruebas automáticas
 
-Ejecuta la suite con:
+La suite cubre escenarios de parciales STT, arranque temprano de TTS, *barge-in* y emisión de métricas.
 
 ```bash
 pytest
 ```
 
-Las pruebas validan:
-
-1. Emisión de parciales STT antes del final.
-2. Arranque de TTS con el primer token del LLM.
-3. Barge-in deteniendo la síntesis.
-4. Generación de métricas por turno.
-
 ---
 
-## 📈 Telemetría
+## 🛣️ Próximos pasos sugeridos
 
-El `Tracer` imprime eventos en stdout como JSON. Al cierre de cada turno, el orquestador envía un mensaje `metrics` con los campos clave. Esto permite instrumentar dashboards de latencia o persistir métricas en logs centralizados.
-
----
-
-## 🗺 Próximos pasos sugeridos
-
-- Sustituir los componentes scriptados por integraciones reales (Whisper, modelos LLM, TTS neural).
-- Añadir *fade-out* al detener TTS y normalizar niveles de audio.
-- Persistir contexto conversacional y añadir memoria de diálogos.
-- Instrumentar tracing distribuido (OpenTelemetry) y dashboards.
+- Añadir *jitter buffer* configurable en el cliente (actualmente usa reproducción directa).
+- Integrar almacenamiento de contexto conversacional y memoria a largo plazo.
+- Instrumentar OpenTelemetry y dashboards de latencia por etapa.
+- Añadir fallback de modelos ligeros para hardware sin GPU.
 
 ---
 
 ## 📄 Licencia
 
-Este proyecto está licenciado bajo Apache 2.0. Consulta `LICENSE` para más detalles.
+Proyecto licenciado bajo Apache 2.0. Consulta `LICENSE` para más detalles.

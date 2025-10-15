@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import deque
 from enum import Enum
 from typing import AsyncIterator, Awaitable, Callable, Deque, Optional
 
-from .interfaces import LLMInterface, STTInterface, STTPartial, TTSInterface, VADInterface
+from .interfaces import (
+    LLMInterface,
+    STTInterface,
+    STTPartial,
+    TTSInterface,
+    VADInterface,
+)
 from .tracer import Tracer
 
 
@@ -16,10 +23,6 @@ class SessionState(str, Enum):
     THINKING = "THINKING"
     SPEAKING = "SPEAKING"
     INTERRUPTED = "INTERRUPTED"
-
-
-StopSignal = object()
-
 
 class Orchestrator:
     """Coordinates the realtime full-duplex voice pipeline."""
@@ -42,9 +45,10 @@ class Orchestrator:
         self._stop_speaking = asyncio.Event()
         self._llm_task: Optional[asyncio.Task] = None
         self._pending_prompts: Deque[str] = deque()
-        self._session_done = asyncio.Event()
         self._stt_first_partial_emitted = False
-        self._metrics_sent = asyncio.Event()
+        self._active_prompt: Optional[str] = None
+        self._last_prompt_text: Optional[str] = None
+        self._awaiting_new_turn = True
 
     async def handle_session(
         self,
@@ -87,6 +91,9 @@ class Orchestrator:
                     self.state = SessionState.INTERRUPTED
 
                 if user_is_speaking:
+                    if self._awaiting_new_turn:
+                        self._awaiting_new_turn = False
+                        self._last_prompt_text = None
                     self.state = SessionState.LISTENING
                     await self.stt.feed(pcm, self.sample_rate)
                     async for partial in self.stt.stream_partials():
@@ -110,6 +117,8 @@ class Orchestrator:
                         False,
                     )
                     await self._maybe_start_llm(final.get("text", ""), ws_send, tracer)
+                    self.vad.reset()
+                    self._awaiting_new_turn = True
         finally:
             # If listening loop exits ensure any ongoing LLM task completes or is cancelled.
             if self._llm_task and not self._llm_task.done():
@@ -141,18 +150,28 @@ class Orchestrator:
         ws_send: Callable[[object, bool], Awaitable[None]],
         tracer: Tracer,
     ) -> None:
-        if not text.strip():
+        prompt = text.strip()
+        if not prompt:
+            return
+        if self._active_prompt and prompt.startswith(self._active_prompt):
+            return
+        if not self._awaiting_new_turn and prompt == self._last_prompt_text:
             return
         if self.state in {SessionState.THINKING, SessionState.SPEAKING}:
-            # Already in progress, queue for later.
-            self._pending_prompts.append(text)
+            # Already in progress, queue for later keeping the most recent version.
+            if not self._pending_prompts or self._pending_prompts[-1] != prompt:
+                self._pending_prompts.clear()
+                self._pending_prompts.append(prompt)
             return
 
-        async def run(prompt: str) -> None:
+        async def run(prompt_text: str) -> None:
             self.state = SessionState.THINKING
+            self._active_prompt = prompt_text
+            self._last_prompt_text = prompt_text
+            self._awaiting_new_turn = False
             first_chunk = True
             try:
-                async for chunk in self.llm.generate_stream(prompt):
+                async for chunk in self.llm.generate_stream(prompt_text):
                     if self._stop_speaking.is_set():
                         break
                     if first_chunk:
@@ -162,6 +181,7 @@ class Orchestrator:
                     await ws_send({"type": "assistant_text", "text": chunk}, False)
                     await self._speak_q.put(chunk)
             finally:
+                self._active_prompt = None
                 if self._stop_speaking.is_set():
                     self._stop_speaking.clear()
                 if self._pending_prompts:
@@ -170,8 +190,9 @@ class Orchestrator:
                 else:
                     # Completed speaking, go back to listening.
                     self.state = SessionState.LISTENING
+                    self._awaiting_new_turn = True
 
-        self._llm_task = asyncio.create_task(run(text))
+        self._llm_task = asyncio.create_task(run(prompt))
 
     async def _speak_loop(
         self,
@@ -198,17 +219,18 @@ class Orchestrator:
     async def _interrupt_speaking(self) -> None:
         if not self._stop_speaking.is_set():
             self._stop_speaking.set()
-            await self.tts.stop()
-            self._clear_speak_queue()
-
-    def _clear_speak_queue(self) -> None:
+        await self.tts.stop()
+        self._pending_prompts.clear()
+        self._active_prompt = None
+        self._last_prompt_text = None
+        self._awaiting_new_turn = False
         while True:
             try:
-                self._speak_q.get_nowait()
+                item = self._speak_q.get_nowait()
             except asyncio.QueueEmpty:
-                return
+                break
             else:
+                if item is not None:
+                    # Pending text entries are discarded to avoid stale playback.
+                    pass
                 self._speak_q.task_done()
-
-
-import contextlib  # noqa: E402  (imported late to avoid circular issues)
