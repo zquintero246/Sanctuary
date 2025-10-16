@@ -2,9 +2,19 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from typing import AsyncIterator, Iterable, Optional
 
 import numpy as np
+
+_transformers = importlib.import_module("transformers")
+if not hasattr(_transformers, "BeamSearchScorer"):
+    # Recent versions of ``transformers`` stopped re-exporting ``BeamSearchScorer``
+    # from the top-level package, while Coqui TTS still imports it from there.
+    # Mirror the old attribute so the dependency keeps working.
+    _beam_search = importlib.import_module("transformers.generation.beam_search")
+    _transformers.BeamSearchScorer = _beam_search.BeamSearchScorer
+
 from TTS.api import TTS
 
 from Services.sanctuary_core.interfaces import TTSInterface
